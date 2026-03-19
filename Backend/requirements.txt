@@ -9,3 +9,7 @@ pillow
 pytesseract
 groq
 python-dotenv
+openai
+requests
+pytest
+pytest-cov  
