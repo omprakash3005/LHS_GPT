@@ -13,3 +13,5 @@ openai
 requests
 pytest
 pytest-cov  
+psycopg2-binary        
+alembic  
