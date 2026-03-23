@@ -81,7 +81,6 @@
 
 
 # main.py
-# main.py
 import os
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -93,7 +92,7 @@ from routers.unified_router import router as unified_router
 from routers.parser import router
 from prompt_optimizer_v7.optimize import router as optimize_router
 from routers.payload import router as payload_router
-from routers.mode_router import router as mode_router
+# from routers.mode_router import router as mode_router
 
 from core.database import engine, Base
 from models import payload_model
@@ -154,7 +153,6 @@ async def health(request: Request):
 app.include_router(router)           # POST /ai/extract
 app.include_router(optimize_router)  # POST /optimize
 app.include_router(payload_router)   # POST /payload/save | GET /payload/{user_code}
-app.include_router(mode_router)
 app.include_router(unified_router)    # POST /api/genai/lhsgpt/connect
 
 @app.get("/api/genai/lhsgpt/dashboard")
