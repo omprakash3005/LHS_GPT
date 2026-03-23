@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{{ title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/static/css/style.css"/>
+
+  {# Inject backend_url from FastAPI into JS so it works on any IP #}
+  <script>
+    window.BACKEND_URL = "{{ backend_url }}";
+    window.APP_VERSION = "{{ version }}";
+  </script>
+</head>
+<body>
+
+<!-- ══ SIDEBAR ══════════════════════════════════════════ -->
+<aside class="sidebar" id="sidebar">
+
+  <div class="sidebar-header">
+    <div class="logo-mark">
+      <img src="/static/assets/lighthouse-logo.jfif" alt="LHS" class="logo-img"
+           onerror="this.style.display='none'; document.getElementById('logoHex').style.display='flex'"/>
+      <div class="logo-hex" id="logoHex" style="display:none">⬡</div>
+      <div class="logo-text">LHS<span>GPT</span></div>
+    </div>
+    <button class="sidebar-toggle" onclick="toggleSidebar()">✕</button>
+  </div>
+
+  <button class="new-chat-btn" onclick="newChat()">
+    <span>✦</span> New Chat
+  </button>
+
+  <!-- Model Switcher -->
+  <div class="model-switcher">
+    <div class="section-label">AI MODEL</div>
+    <div class="model-options">
+      <div class="model-opt active" id="opt-groq" onclick="switchModel('groq')">
+        <div class="model-dot" style="background:var(--groq);box-shadow:0 0 6px var(--groq)"></div>
+        <div class="model-info">
+          <div class="model-name">Groq</div>
+          <div class="model-sub">llama-3.3-70b-versatile</div>
+        </div>
+        <div class="check-icon" id="chk-groq">✓</div>
+      </div>
+      <div class="model-opt" id="opt-openai" onclick="switchModel('openai')">
+        <div class="model-dot" style="background:var(--openai);box-shadow:0 0 6px var(--openai)"></div>
+        <div class="model-info">
+          <div class="model-name">OpenAI</div>
+          <div class="model-sub">gpt-4</div>
+        </div>
+        <div class="check-icon hidden" id="chk-openai">✓</div>
+      </div>
+    </div>
+    <div class="model-toast hidden" id="modelToast"></div>
+  </div>
+
+  <!-- Chat History -->
+  <div class="history-wrap">
+    <div class="section-label">
+      HISTORY &nbsp;<span class="muted-badge">clears on refresh</span>
+    </div>
+    <div class="history-list" id="historyList">
+      <div class="history-empty">No conversations yet</div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="sidebar-footer">
+    <div class="user-row">
+      <div class="user-avatar" id="userAvatar">?</div>
+      <div class="user-details">
+        <div class="user-name" id="displayUserCode">Set user code</div>
+        <div class="user-sub">Lighthouse India</div>
+      </div>
+    </div>
+    <button class="icon-btn" onclick="toggleSettings()" title="Settings">⚙</button>
+  </div>
+
+</aside>
+
+<!-- ══ MAIN ═════════════════════════════════════════════ -->
+<main class="chat-main" id="chatMain">
+
+  <!-- Top Bar -->
+  <header class="topbar">
+    <button class="icon-btn mobile-menu" onclick="toggleSidebar()">☰</button>
+    <div class="topbar-center">
+      <div class="model-badge" id="modelBadge">
+        <div class="badge-pulse" id="badgePulse"></div>
+        <span id="badgeLabel">Groq · llama-3.3-70b-versatile</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="conn-pill" id="connPill">
+        <div class="conn-dot" id="connDot"></div>
+        <span id="connLabel">Checking...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Chat Window -->
+  <div class="chat-window" id="chatWindow">
+
+    <!-- Welcome -->
+    <div class="welcome" id="welcomeScreen">
+      <div class="welcome-glow"></div>
+
+      <div class="welcome-brand">
+        <div class="w-hex">⬡</div>
+        <h1>LHSGPT</h1>
+        <p class="w-sub">Lighthouse India · Generative AI Platform</p>
+      </div>
+
+      <div class="chip-row">
+        <div class="chip" onclick="useChip(this)">📄 Summarize a document</div>
+        <div class="chip" onclick="useChip(this)">🔍 Extract key data</div>
+        <div class="chip" onclick="useChip(this)">✍ Optimize my prompt</div>
+        <div class="chip" onclick="useChip(this)">📊 Analyze a spreadsheet</div>
+      </div>
+
+      <div class="setup-box" id="setupBox">
+        <p class="setup-hint">Enter your User Code to begin</p>
+        <div class="setup-row">
+          <input id="setupUserCode" type="text" placeholder="User Code  e.g. RO10"
+                 class="setup-input" onkeydown="if(event.key==='Enter')saveUserCode()"/>
+          <button class="setup-btn" onclick="saveUserCode()">Start →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Messages -->
+    <div class="messages" id="messages"></div>
+
+  </div>
+
+  <!-- Input Zone -->
+  <div class="input-zone" id="inputZone">
+
+    <!-- File preview strip -->
+    <div class="file-strip hidden" id="fileStrip">
+      <span class="file-icon-sm">📎</span>
+      <span class="file-nm" id="fileNm"></span>
+      <button class="file-x" onclick="removeFile()">✕</button>
+    </div>
+
+    <div class="input-row">
+      <!-- Optimizer -->
+      <button class="opt-btn" id="optBtn" onclick="optimizePrompt()" title="AI Optimize Prompt">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+        </svg>
+        <span id="optLabel">Optimize</span>
+      </button>
+
+      <!-- File attach -->
+      <label class="attach-lbl" for="fileInput" title="Attach file">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+        </svg>
+        <input type="file" id="fileInput" accept=".pdf,.csv,.xlsx,.docx,.txt"
+               onchange="handleFile(this)" style="display:none"/>
+      </label>
+
+      <!-- Textarea -->
+      <textarea id="chatInput" placeholder="Message LHSGPT..."
+                rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+
+      <!-- Send -->
+      <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+      </button>
+    </div>
+
+    <div class="input-caption">
+      LHSGPT · Lighthouse India &nbsp;·&nbsp;
+      <a href="/docs" target="_blank">API Docs ↗</a> &nbsp;·&nbsp;
+      <a href="/api/genai/lhsgpt/dashboard" target="_blank">Dashboard ↗</a>
+    </div>
+  </div>
+
+</main>
+
+<!-- ══ SETTINGS MODAL ════════════════════════════════════ -->
+<div class="modal-bg hidden" id="settingsModal">
+  <div class="modal">
+    <div class="modal-hd">
+      <span>⚙ Settings</span>
+      <button class="modal-x" onclick="toggleSettings()">✕</button>
+    </div>
+    <div class="modal-bd">
+      <div class="field-g">
+        <label>User Code <span class="req">*</span></label>
+        <input id="s_userCode" type="text" placeholder="RO10"/>
+      </div>
+      <div class="field-g">
+        <label>App Name</label>
+        <input id="s_appName" value="LHSGPT"/>
+      </div>
+      <div class="field-g">
+        <label>Group Code</label>
+        <input id="s_groupCode" value="LI"/>
+      </div>
+      <div class="field-g">
+        <label>Client IP</label>
+        <input id="s_clientIp" value="192.168.100.1"/>
+      </div>
+      <div class="field-g">
+        <label>Client Browser</label>
+        <input id="s_browser" value="Chrome-146.0.0.0"/>
+      </div>
+      <div class="field-g">
+        <label>Backend URL <span class="muted-note">(auto-detected)</span></label>
+        <input id="s_backendUrl" type="text"/>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn-cancel" onclick="toggleSettings()">Cancel</button>
+      <button class="btn-save" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Mobile overlay -->
+<div class="mob-overlay hidden" id="mobOverlay" onclick="toggleSidebar()"></div>
+
+<script src="/static/js/script.js"></script>
+</body>
+</html>

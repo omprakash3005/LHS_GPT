@@ -11,7 +11,9 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://postgres:password@localhost:5432/lhsgpt_db"
 )
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+# core/database.py
+
+engine = create_async_engine(DATABASE_URL, echo=False)  # ← change True to False
 
 AsyncSessionLocal = sessionmaker(
     bind=engine,
