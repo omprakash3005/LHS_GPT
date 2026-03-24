@@ -22,6 +22,11 @@ DEFAULT_LOCAL_MODEL = "http://localhost:8000/predict"
 
 TIMEOUT = 30   # seconds — prevents hanging forever
 
+def truncate_text(text: str, max_chars: int = 6000) -> str:
+    """Truncate document text to avoid Groq token limit errors."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n\n[... content truncated to fit token limit ...]"
 
 def ask_ai(
     user_prompt  : str,
@@ -43,7 +48,7 @@ Return a structured and helpful response."""
     if model_source == "groq" or model_source is None:
         model_to_use = model_name or DEFAULT_GROQ_MODEL
         response = groq_client.chat.completions.create(
-            model    = model_to_use,
+            model    = DEFAULT_GROQ_MODEL,
             messages = [{"role": "user", "content": combined_prompt}],
             temperature  = 0.3,
             max_tokens   = 1024,

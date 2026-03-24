@@ -54,8 +54,8 @@ class FrontendRequest(BaseModel):
 
     # URL builder
     ai_keyword         : Optional[str] = "genai"       # genai|pyai|agentai|visionai
-    app_project_name   : str                            # e.g. invoice_ocr
-    app_endpoint       : str                            # e.g. process
+    app_project_name   : Optional[str] = "LHSGPT"                       # e.g. invoice_ocr
+    app_endpoint       : Optional[str] = "dashboard"                          # e.g. process
 
 
 class FrontendResponse(BaseModel):
@@ -82,5 +82,5 @@ class UnifiedRequest(BaseModel):
 
     # Frontend fields
     ai_keyword         : Optional[str] = "genai"
-    app_project_name   : Optional[str] = None
-    app_endpoint       : Optional[str] = None
+    app_project_name   : Optional[str] = "LHSGPT"
+    app_endpoint       : Optional[str] = "dashboard"

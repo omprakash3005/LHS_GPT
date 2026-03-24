@@ -1,194 +1,528 @@
-# # routers/mode_router.py
-# import random
-# from datetime import datetime
+# routers/unified_router.py
+import uuid
+import random
+from datetime import datetime, timedelta
 
-# from fastapi import APIRouter, HTTPException, Depends
-# from sqlalchemy.ext.asyncio import AsyncSession
-# from sqlalchemy.future import select
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
-# from core.database import get_db
-# from core.groq_client import ask_ai
-# from models.payload_model import PayloadLog
-# from schemas.payload_schema import (
-#     ModeRequest,
-#     BackendModeResponse,
-#     FrontendModeResponse,
-# )
+from services.utils import file_to_base64, base64_to_file
+from core.database import get_db
+from core.groq_client import ask_ai
+from models.payload_model import PayloadLog
+from models.session_model import SessionLog
+from services.file_parser import detect_and_parse
 
-# router = APIRouter(
-#     prefix="/api/genai",
-#     tags=["LHS GenAI"]
-# )
+router = APIRouter(prefix="/api/genai", tags=["LHS GenAI — Unified"])
 
-# DOMAIN = "ai.lighthouseindia.com"
-
-
-# # ─────────────────────────────────────────
-# # Helpers
-# # ─────────────────────────────────────────
-
-# def generate_user_ref_no() -> str:
-#     ts = int(datetime.utcnow().timestamp() * 1000)   # 13 digits
-#     suffix = random.randint(0, 9)
-#     return f"{ts}{suffix}"
+DOMAIN            = "ai.lighthouseindia.com"
+LOCAL_BASE        = "http://192.168.100.115:8000"
+SESSION_TTL_HOURS = 24
 
 
-# def build_canonical_url(
-#     app_type: str,
-#     ai_keyword: str,
-#     app_project_name: str,
-#     app_endpoint: str,
-# ) -> str:
-#     """
-#     Format:
-#     https://{DOMAIN}/{app_type}/{ai_keyword}/{app_project_name}/{app_endpoint}
-#     e.g.
-#     https://ai.lighthouseindia.com/api/genai/invoice_ocr/process
-#     """
-#     parts = [
-#         app_type.lower().strip("/"),
-#         ai_keyword.lower().strip("/"),
-#         app_project_name.lower().replace(" ", "_").strip("/"),
-#         app_endpoint.lower().replace(" ", "_").strip("/"),
-#     ]
-#     path = "/".join(parts)
-#     return f"https://{DOMAIN}/{path}"
+# ─────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────
+
+def clean(val, default=None):
+    """Strip Swagger placeholder values and empty strings."""
+    if val in (None, "", "string", "null", "none", "None"):
+        return default
+    return str(val).strip()
 
 
-# async def save_payload_to_db(
-#     db: AsyncSession,
-#     identifier,
-#     payload_data: dict,
-# ) -> PayloadLog:
-#     """Check uniqueness, generate ref_no, persist and return the row."""
-
-#     result = await db.execute(
-#         select(PayloadLog).where(PayloadLog.user_code == identifier.user_code)
-#     )
-#     existing = result.scalar_one_or_none()
-#     if existing:
-#         raise HTTPException(
-#             status_code=409,
-#             detail=f"user_code '{identifier.user_code}' already exists."
-#         )
-
-#     user_ref_no    = generate_user_ref_no()
-#     user_timestamp = identifier.user_timestamp or datetime.utcnow().strftime(
-#         "%Y-%m-%d %H:%M:%S"
-#     )
-
-#     entry = PayloadLog(
-#         user_ref_no      = user_ref_no,
-#         user_code        = identifier.user_code,
-#         calling_app_name = identifier.calling_app_name,
-#         group_code       = identifier.group_code,
-#         appkey           = identifier.appkey,
-#         user_timestamp   = user_timestamp,
-#         client_ip        = identifier.client_ip,
-#         client_hostname  = identifier.client_hostname,
-#         client_browser   = identifier.client_browser,
-#         payload_data     = payload_data,
-#     )
-
-#     db.add(entry)
-#     await db.commit()
-#     await db.refresh(entry)
-#     return entry
+def generate_user_ref_no() -> str:
+    ts = int(datetime.utcnow().timestamp() * 1000)
+    return f"{ts}{random.randint(0, 9)}"
 
 
-# # ─────────────────────────────────────────
-# # POST /api/genai/lhsgpt/connect
-# # ─────────────────────────────────────────
+def generate_session_id() -> str:
+    return str(uuid.uuid4()).replace("-", "")
 
-# @router.post("/lhsgpt/connect")
-# async def lhsgpt_connect(
-#     request: ModeRequest,
-#     db: AsyncSession = Depends(get_db),
-# ):
-#     """
-#     Single endpoint, two behaviours based on `mode`:
 
-#     ► mode = "backend"
-#         • Saves payload to DB
-#         • Calls /ai/extract AI pipeline (ask_ai)
-#         • Returns success + user_ref_no + ai_output
+def build_canonical_url(ai_keyword: str, project: str, endpoint: str) -> str:
+    parts = [p.lower().replace(" ", "_").strip("/")
+             for p in [ai_keyword, project, endpoint]]
+    return f"https://{DOMAIN}/api/{'/'.join(parts)}"
 
-#     ► mode = "frontend"
-#         • Saves payload to DB
-#         • Builds canonical LHS URL
-#         • Returns success + user_ref_no + canonical_url
-#     """
 
-#     # ── BACKEND MODE ─────────────────────────────────
-#     if request.mode == "backend":
+def build_access_url(ai_keyword: str, project: str, endpoint: str) -> str:
+    parts = [p.lower().replace(" ", "_").strip("/")
+             for p in [ai_keyword, project, endpoint]]
+    return f"{LOCAL_BASE}/api/{'/'.join(parts)}"
 
-#         # 1. Validate – prompt is mandatory for backend mode
-#         if not request.prompt:
-#             raise HTTPException(
-#                 status_code=422,
-#                 detail="'prompt' is required when mode is 'backend'."
-#             )
-#         print("Validation passed for backend mode.")
-#         # 2. Save to DB
-#         entry = await save_payload_to_db(
-#             db, request.payload_identifier, request.payload_data
-#         )
 
-#         # 3. Call AI extract (connected to /ai/extract pipeline)
-#         document_text = str(request.payload_data) if request.payload_data else ""
-#         ai_output = ask_ai(
-#             user_prompt   = request.prompt,
-#             document_text = document_text,
-#             model_source  = request.model_source,
-#             model_name    = request.model_name,
-#         )
+def fmt_dt(dt) -> str:
+    """Convert datetime to human readable format: 24 Mar 2025, 10:30 AM UTC"""
+    if dt is None:
+        return None
+    try:
+        if isinstance(dt, str):
+            dt = datetime.fromisoformat(dt)
+        return dt.strftime("%d %b %Y, %I:%M %p UTC")
+    except Exception:
+        return str(dt)
 
-#         return BackendModeResponse(
-#             status      = "success",
-#             user_ref_no = entry.user_ref_no,
-#             message     = "Backend mode: payload saved and AI processed successfully.",
-#             ai_output   = ai_output,
-#             created_at  = str(entry.created_at),
-#         )
 
-#     # ── FRONTEND MODE ─────────────────────────────────
-#     elif request.mode == "frontend":
+async def save_payload(db, ident, payload_data) -> PayloadLog:
+    result = await db.execute(
+        select(PayloadLog).where(PayloadLog.user_code == ident["user_code"])
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        return existing
 
-#         # 1. Validate URL fields
-#         missing = [
-#             f for f in ["app_project_name", "app_endpoint"]
-#             if not getattr(request, f)
-#         ]
-#         if missing:
-#             raise HTTPException(
-#                 status_code=422,
-#                 detail=f"Frontend mode requires: {', '.join(missing)}"
-#             )
+    entry = PayloadLog(
+        user_ref_no      = generate_user_ref_no(),
+        user_code        = ident["user_code"],
+        calling_app_name = ident["calling_app_name"],
+        group_code       = ident["group_code"],
+        appkey           = ident["appkey"],
+        user_timestamp   = ident["user_timestamp"] or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        client_ip        = ident["client_ip"],
+        client_hostname  = ident["client_hostname"],
+        client_browser   = ident["client_browser"],
+        payload_data     = payload_data,
+    )
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+    return entry
 
-#         # 2. Save to DB
-#         entry = await save_payload_to_db(
-#             db, request.payload_identifier, request.payload_data
-#         )
 
-#         # 3. Build canonical URL
-#         canonical_url = build_canonical_url(
-#             app_type         = request.app_type or "api",
-#             ai_keyword       = request.ai_keyword or "genai",
-#             app_project_name = request.app_project_name,
-#             app_endpoint     = request.app_endpoint,
-#         )
+async def create_session(db, user_ref_no, user_code, mode, session_data) -> SessionLog:
+    session = SessionLog(
+        session_id   = generate_session_id(),
+        user_ref_no  = user_ref_no,
+        user_code    = user_code,
+        mode         = mode,
+        is_active    = True,
+        session_data = session_data,
+        expires_at   = datetime.utcnow() + timedelta(hours=SESSION_TTL_HOURS),
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return session
 
-#         return FrontendModeResponse(
-#             status        = "success",
-#             user_ref_no   = entry.user_ref_no,
-#             message       = "Frontend mode: payload saved and URL generated successfully.",
-#             canonical_url = canonical_url,
-#             created_at    = str(entry.created_at),
-#         )
 
-#     # ── INVALID MODE ──────────────────────────────────
-#     else:
-#         raise HTTPException(
-#             status_code=400,
-#             detail=f"Invalid mode '{request.mode}'. Must be 'backend' or 'frontend'."
-#         )
+async def optimize_prompt_text(raw_prompt: str) -> str:
+    from prompt_optimizer_v7.optimizer import prompt_optimizer
+    try:
+        from fastapi.concurrency import run_in_threadpool
+        return await run_in_threadpool(prompt_optimizer, raw_prompt)
+    except Exception:
+        return raw_prompt
+
+
+# ─────────────────────────────────────────────────────────
+# Pydantic model — for JSON endpoint (connect1)
+# ─────────────────────────────────────────────────────────
+
+class LhsgptConnectRequest(BaseModel):
+    # Payload identifier
+    mode               : str         = Field(...)
+    user_code          : str         = Field(...)
+    calling_app_name   : str         = Field("LHSGPT")
+    group_code         : str         = Field("LI")
+    appkey             : str         = Field("LHSGPT")
+    client_ip          : str         = Field("0.0.0.0")
+    client_hostname    : str         = Field("")
+    client_browser     : str         = Field("")
+    user_timestamp     : str | None  = Field(None)
+    # Backend fields
+    prompt             : str | None  = Field(None)
+    model_provider     : str         = Field("groq")
+    model_name         : str | None  = Field(None)
+    optimize_prompt    : bool        = Field(True)
+    # Frontend fields
+    ai_keyword         : str         = Field("genai")
+    app_project_name   : str         = Field("LHSGPT")
+    app_endpoint       : str         = Field("dashboard")
+    # File as base64
+    file_base64        : str | None  = Field(None)
+    file_name          : str | None  = Field(None)
+
+
+# ─────────────────────────────────────────────────────────
+# ROUTE 1 — Form + File Upload
+# POST /api/genai/lhsgpt/connect
+# ─────────────────────────────────────────────────────────
+
+@router.post("/lhsgpt/connect", summary="LHS GPT Connect — Form + File Upload")
+async def lhsgpt_connect(
+    # Payload identifier
+    mode               : str        = Form(...),
+    user_code          : str        = Form(...),
+    calling_app_name   : str        = Form("LHSGPT"),
+    group_code         : str        = Form("LI"),
+    appkey             : str        = Form("LHSGPT"),
+    client_ip          : str        = Form("0.0.0.0"),
+    client_hostname    : str        = Form(""),
+    client_browser     : str        = Form(""),
+    user_timestamp     : str        = Form(None),
+    # Backend fields
+    prompt             : str        = Form(None),
+    model_provider     : str        = Form("groq"),
+    model_name         : str        = Form(None),
+    optimize_prompt    : bool       = Form(True),
+    # Frontend fields
+    ai_keyword         : str        = Form("genai"),
+    app_project_name   : str        = Form("LHSGPT"),
+    app_endpoint       : str        = Form("dashboard"),
+    # Optional file upload
+    file               : UploadFile = File(None),
+    db                 : AsyncSession = Depends(get_db),
+):
+    # ── Normalize mode (BACKEND / Backend / backend all work) ─
+    mode = mode.strip().lower()
+
+    # ── Sanitize ──────────────────────────────────────────────
+    model_name       = clean(model_name)
+    model_provider   = clean(model_provider, "groq")
+    ai_keyword       = clean(ai_keyword, "genai")
+    app_project_name = clean(app_project_name, "LHSGPT")
+    app_endpoint     = clean(app_endpoint, "dashboard")
+    user_timestamp   = clean(user_timestamp)
+    client_ip        = clean(client_ip, "0.0.0.0")
+    client_hostname  = clean(client_hostname, "")
+    client_browser   = clean(client_browser, "")
+
+    ident = {
+        "user_code"       : user_code,
+        "calling_app_name": calling_app_name,
+        "group_code"      : group_code,
+        "appkey"          : appkey,
+        "client_ip"       : client_ip,
+        "client_hostname" : client_hostname,
+        "client_browser"  : client_browser,
+        "user_timestamp"  : user_timestamp,
+    }
+
+    payload_entry = await save_payload(db, ident, {})
+
+    # ══════════════════════════════════════════════════════════
+    # BACKEND MODE
+    # ══════════════════════════════════════════════════════════
+    if mode == "backend":
+
+        if not clean(prompt):
+            raise HTTPException(status_code=422, detail="'prompt' is required for backend mode.")
+
+        # Step 1 — Optimize prompt
+        final_prompt = prompt
+        optimized    = None
+        if optimize_prompt:
+            optimized    = await optimize_prompt_text(prompt)
+            final_prompt = optimized or prompt
+
+        # Step 2 — Parse file if uploaded
+        document_text = ""
+        filename      = None
+        if file and clean(file.filename):
+            file_bytes = await file.read()
+            if file_bytes:
+                document_text = detect_and_parse(file.filename, file_bytes)
+                filename      = file.filename
+
+        # Step 3 — Call AI
+        ai_output = ask_ai(
+            user_prompt   = final_prompt,
+            document_text = document_text,
+            model_source  = model_provider,
+            model_name    = model_name,
+        )
+
+        # Step 4 — Create session
+        session = await create_session(
+            db,
+            user_ref_no  = payload_entry.user_ref_no,
+            user_code    = user_code,
+            mode         = "backend",
+            session_data = {
+                "prompt"          : prompt,
+                "optimized_prompt": optimized,
+                "model_provider"  : model_provider,
+                "model_name"      : model_name,
+                "filename"        : filename,
+                "ai_output"       : ai_output,
+            },
+        )
+
+        used_model = f"{model_provider}/{model_name}" if model_name else f"{model_provider}/default"
+
+        return JSONResponse({
+            "status"          : "success",
+            "user_ref_no"     : payload_entry.user_ref_no,
+            "session_id"      : session.session_id,
+            "message"         : "Backend mode: AI processing completed successfully.",
+            "optimized_prompt": optimized,
+            "ai_output"       : ai_output,
+            "model_used"      : used_model,
+            "filename"        : filename,
+            "created_at"      : fmt_dt(session.created_at),
+            "session_expires" : fmt_dt(session.expires_at),
+        })
+
+    # ══════════════════════════════════════════════════════════
+    # FRONTEND MODE
+    # ══════════════════════════════════════════════════════════
+    elif mode == "frontend":
+
+        canonical_url = build_canonical_url(ai_keyword, app_project_name, app_endpoint)
+        access_url    = build_access_url(ai_keyword, app_project_name, app_endpoint)
+
+        session = await create_session(
+            db,
+            user_ref_no  = payload_entry.user_ref_no,
+            user_code    = user_code,
+            mode         = "frontend",
+            session_data = {
+                "canonical_url"   : canonical_url,
+                "access_url"      : access_url,
+                "ai_keyword"      : ai_keyword,
+                "app_project_name": app_project_name,
+                "app_endpoint"    : app_endpoint,
+            },
+        )
+
+        return JSONResponse({
+            "status"         : "success",
+            "user_ref_no"    : payload_entry.user_ref_no,
+            "session_id"     : session.session_id,
+            "message"        : "Frontend mode: URL generated successfully. Click access_url to open the full application.",
+            "canonical_url"  : canonical_url,
+            "access_url"     : access_url,
+            "created_at"     : fmt_dt(session.created_at),
+            "session_expires": fmt_dt(session.expires_at),
+        })
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode '{mode}'. Use 'backend' or 'frontend'."
+        )
+
+
+# ─────────────────────────────────────────────────────────
+# ROUTE 2 — JSON body + Base64 file
+# POST /api/genai/lhsgpt/connect1
+# ─────────────────────────────────────────────────────────
+
+@router.post("/lhsgpt/connect1", summary="LHS GPT Connect — JSON + Base64 File")
+async def lhsgpt_connect1(
+    req : LhsgptConnectRequest,
+    db  : AsyncSession = Depends(get_db),
+):
+    # ── Unpack & normalize ─────────────────────────────────────
+    mode             = req.mode.strip().lower()
+    user_code        = req.user_code
+    calling_app_name = req.calling_app_name
+    group_code       = req.group_code
+    appkey           = req.appkey
+    client_ip        = req.client_ip
+    client_hostname  = req.client_hostname
+    client_browser   = req.client_browser
+    user_timestamp   = req.user_timestamp
+    prompt           = req.prompt
+    model_provider   = req.model_provider
+    model_name       = req.model_name
+    optimize_prompt  = req.optimize_prompt
+    ai_keyword       = req.ai_keyword
+    app_project_name = req.app_project_name
+    app_endpoint     = req.app_endpoint
+  
+
+    # ── Sanitize ───────────────────────────────────────────────
+    model_name       = clean(model_name)
+    model_provider   = clean(model_provider, "groq")
+    ai_keyword       = clean(ai_keyword, "genai")
+    app_project_name = clean(app_project_name, "LHSGPT")
+    app_endpoint     = clean(app_endpoint, "dashboard")
+    user_timestamp   = clean(user_timestamp)
+    client_ip        = clean(client_ip, "0.0.0.0")
+    client_hostname  = clean(client_hostname, "")
+    client_browser   = clean(client_browser, "")
+
+    ident = {
+        "user_code"       : user_code,
+        "calling_app_name": calling_app_name,
+        "group_code"      : group_code,
+        "appkey"          : appkey,
+        "client_ip"       : client_ip,
+        "client_hostname" : client_hostname,
+        "client_browser"  : client_browser,
+        "user_timestamp"  : user_timestamp,
+    }
+    payload_data = {
+    "file_base64" : clean(file_to_base64),
+    "file_name"   : clean(filename),
+    }
+
+    payload_entry = await save_payload(db, ident, payload_data)
+    # ══════════════════════════════════════════════════════════
+    # BACKEND MODE
+    # ══════════════════════════════════════════════════════════
+    if mode == "backend":
+
+        if not clean(prompt):
+            raise HTTPException(status_code=422, detail="'prompt' is required for backend mode.")
+
+        # Step 1 — Optimize prompt
+        final_prompt = prompt
+        optimized    = None
+        if optimize_prompt:
+            optimized    = await optimize_prompt_text(prompt)
+            final_prompt = optimized or prompt
+
+        # Step 2 — Decode base64 file if provided
+        document_text = ""
+        filename      = None
+        if clean(file_to_base64) and clean(filename):
+            file_bytes    = base64_to_file(file_to_base64)
+            document_text = detect_and_parse(filename, file_bytes)
+            filename      = filename
+
+        # Step 3 — Call AI
+        ai_output = ask_ai(
+            user_prompt   = final_prompt,
+            document_text = document_text,
+            model_source  = model_provider,
+            model_name    = model_name,
+        )
+
+        # Step 4 — Create session
+        session = await create_session(
+            db,
+            user_ref_no  = payload_entry.user_ref_no,
+            user_code    = user_code,
+            mode         = "backend",
+            session_data = {
+                "prompt"          : prompt,
+                "optimized_prompt": optimized,
+                "model_provider"  : model_provider,
+                "model_name"      : model_name,
+                "filename"        : filename,
+                "ai_output"       : ai_output,
+            },
+        )
+
+        used_model = f"{model_provider}/{model_name}" if model_name else f"{model_provider}/default"
+
+        return JSONResponse({
+            "status"          : "success",
+            "user_ref_no"     : payload_entry.user_ref_no,
+            "session_id"      : session.session_id,
+            "message"         : "Backend mode: AI processing completed successfully.",
+            "optimized_prompt": optimized,
+            "ai_output"       : ai_output,
+            "model_used"      : used_model,
+            "filename"        : filename,
+            "created_at"      : fmt_dt(session.created_at),
+            "session_expires" : fmt_dt(session.expires_at),
+        })
+
+    # ══════════════════════════════════════════════════════════
+    # FRONTEND MODE
+    # ══════════════════════════════════════════════════════════
+    elif mode == "frontend":
+
+        canonical_url = build_canonical_url(ai_keyword, app_project_name, app_endpoint)
+        access_url    = build_access_url(ai_keyword, app_project_name, app_endpoint)
+
+        session = await create_session(
+            db,
+            user_ref_no  = payload_entry.user_ref_no,
+            user_code    = user_code,
+            mode         = "frontend",
+            session_data = {
+                "canonical_url"   : canonical_url,
+                "access_url"      : access_url,
+                "ai_keyword"      : ai_keyword,
+                "app_project_name": app_project_name,
+                "app_endpoint"    : app_endpoint,
+            },
+        )
+
+        return JSONResponse({
+            "status"         : "success",
+            "user_ref_no"    : payload_entry.user_ref_no,
+            "session_id"     : session.session_id,
+            "message"        : "Frontend mode: URL generated successfully. Click access_url to open the full application.",
+            "canonical_url"  : canonical_url,
+            "access_url"     : access_url,
+            "created_at"     : fmt_dt(session.created_at),
+            "session_expires": fmt_dt(session.expires_at),
+        })
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode '{mode}'. Use 'backend' or 'frontend'."
+        )
+
+
+# ─────────────────────────────────────────────────────────
+# SESSION ROUTES
+# ─────────────────────────────────────────────────────────
+
+@router.get("/session/{session_id}", tags=["Session"])
+async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(SessionLog).where(SessionLog.session_id == session_id)
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {
+        "session_id"  : session.session_id,
+        "user_ref_no" : session.user_ref_no,
+        "user_code"   : session.user_code,
+        "mode"        : session.mode,
+        "is_active"   : session.is_active,
+        "session_data": session.session_data,
+        "created_at"  : fmt_dt(session.created_at),
+        "expires_at"  : fmt_dt(session.expires_at),
+    }
+
+
+@router.get("/sessions/{user_code}", tags=["Session"])
+async def get_user_sessions(user_code: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(SessionLog).where(SessionLog.user_code == user_code)
+    )
+    sessions = result.scalars().all()
+    if not sessions:
+        raise HTTPException(status_code=404, detail=f"No sessions for '{user_code}'.")
+    return {
+        "user_code": user_code,
+        "total"    : len(sessions),
+        "sessions" : [
+            {
+                "session_id": s.session_id,
+                "mode"      : s.mode,
+                "is_active" : s.is_active,
+                "created_at": fmt_dt(s.created_at),
+                "expires_at": fmt_dt(s.expires_at),
+            } for s in sessions
+        ],
+    }
+
+
+@router.delete("/session/{session_id}", tags=["Session"])
+async def invalidate_session(session_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(SessionLog).where(SessionLog.session_id == session_id)
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    session.is_active = False
+    await db.commit()
+    return {
+        "status" : "success",
+        "message": f"Session '{session_id}' invalidated.",
+    }
